@@ -1,19 +1,21 @@
-use async_stream::stream;
+use async_stream::transform_stream;
 
+use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 
 #[tokio::test]
 async fn test() {
-    let s = stream! {
-        yield "hello";
-        yield "world";
-    };
+    let s = transform_stream(|mut yielder| async move {
+        yielder.send("hello").await;
+        yielder.send("world").await;
+    });
 
-    let s = stream! {
-        for await x in s {
-            yield x.to_owned() + "!";
+    let s = transform_stream(move |mut yielder| async move {
+        pin_mut!(s);
+        while let Some(x) = s.next().await {
+            yielder.send(x.to_owned() + "!").await;
         }
-    };
+    });
 
     let values: Vec<_> = s.collect().await;
 

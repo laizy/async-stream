@@ -14,8 +14,7 @@ pub struct AsyncStream<T, U> {
 }
 
 impl<T, U> AsyncStream<T, U> {
-    #[doc(hidden)]
-    pub fn new(rx: Receiver<T>, generator: U) -> AsyncStream<T, U> {
+    pub(crate) fn new(rx: Receiver<T>, generator: U) -> AsyncStream<T, U> {
         AsyncStream {
             rx,
             done: false,

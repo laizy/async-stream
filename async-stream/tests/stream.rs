@@ -1,4 +1,4 @@
-use async_stream::stream;
+use async_stream::{transform_stream, Sender};
 
 use futures_core::stream::{FusedStream, Stream};
 use futures_util::pin_mut;
@@ -8,7 +8,7 @@ use tokio_test::assert_ok;
 
 #[tokio::test]
 async fn noop_stream() {
-    let s = stream! {};
+    let s = transform_stream(|_: Sender<()>| async {});
     pin_mut!(s);
 
     while let Some(_) = s.next().await {
@@ -22,10 +22,10 @@ async fn empty_stream() {
 
     {
         let r = &mut ran;
-        let s = stream! {
+        let s = transform_stream(|_: Sender<()>| async {
             *r = true;
             println!("hello world!");
-        };
+        });
         pin_mut!(s);
 
         while let Some(_) = s.next().await {
@@ -38,9 +38,9 @@ async fn empty_stream() {
 
 #[tokio::test]
 async fn yield_single_value() {
-    let s = stream! {
-        yield "hello";
-    };
+    let s = transform_stream(|mut yielder| async move {
+        yielder.send("hello").await;
+    });
 
     let values: Vec<_> = s.collect().await;
 
@@ -50,9 +50,9 @@ async fn yield_single_value() {
 
 #[tokio::test]
 async fn fused() {
-    let s = stream! {
-        yield "hello";
-    };
+    let s = transform_stream(|mut yielder| async move {
+        yielder.send("hello").await;
+    });
     pin_mut!(s);
 
     assert!(!s.is_terminated());
@@ -66,11 +66,11 @@ async fn fused() {
 
 #[tokio::test]
 async fn yield_multi_value() {
-    let s = stream! {
-        yield "hello";
-        yield "world";
-        yield "dizzy";
-    };
+    let s = transform_stream(|mut yielder| async move {
+        yielder.send("hello").await;
+        yielder.send("world").await;
+        yielder.send("dizzy").await;
+    });
 
     let values: Vec<_> = s.collect().await;
 
@@ -83,11 +83,11 @@ async fn yield_multi_value() {
 #[tokio::test]
 async fn return_stream() {
     fn build_stream() -> impl Stream<Item = u32> {
-        stream! {
-            yield 1;
-            yield 2;
-            yield 3;
-        }
+        transform_stream(|mut yielder| async move {
+            yielder.send(1).await;
+            yielder.send(2).await;
+            yielder.send(3).await;
+        })
     }
 
     let s = build_stream();
@@ -103,11 +103,11 @@ async fn return_stream() {
 async fn consume_channel() {
     let (mut tx, mut rx) = mpsc::channel(10);
 
-    let s = stream! {
+    let s = transform_stream(|mut yielder| async move {
         while let Some(v) = rx.recv().await {
-            yield v;
+            yielder.send(v).await;
         }
-    };
+    });
 
     pin_mut!(s);
 
@@ -126,9 +126,9 @@ async fn borrow_self() {
 
     impl Data {
         fn stream<'a>(&'a self) -> impl Stream<Item = &str> + 'a {
-            stream! {
-                yield &self.0[..];
-            }
+            transform_stream(move |mut yielder| async move {
+                yielder.send(&self.0[..]).await;
+            })
         }
     }
 
@@ -141,25 +141,36 @@ async fn borrow_self() {
 
 #[tokio::test]
 async fn stream_in_stream() {
-    let s = stream! {
-        let s = stream! {
+    let s = transform_stream(|mut yielder| async move {
+        let s = transform_stream(|mut yielder| async move {
             for i in 0..3 {
-                yield i;
+                yielder.send(i).await;
             }
-        };
+        });
 
         pin_mut!(s);
         while let Some(v) = s.next().await {
-            yield v;
+            yielder.send(v).await;
         }
-    };
+    });
 
     let values: Vec<_> = s.collect().await;
     assert_eq!(3, values.len());
 }
 
-#[test]
-fn test() {
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests/ui/*.rs");
+#[tokio::test]
+#[should_panic]
+async fn mismatch_yielder() {
+    let s = transform_stream(|mut yielder| async move {
+        let s = transform_stream(move |_: Sender<()>| async move {
+            for i in 0..3 {
+                yielder.send(i).await;
+            }
+        });
+
+        pin_mut!(s);
+        while let Some(_v) = s.next().await {}
+    });
+
+    let _values: Vec<_> = s.collect().await;
 }
